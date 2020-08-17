@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Copyright 2020 Givi Khojanashvili<gigovich@gmail.com>
+
+USER=gonio
+NAME=gonio
+HOST=localhost
+
+# extract database current state migration number or init migration number sequence
+psql -U $USER -h $HOST $NAME -c 'CREATE SEQUENCE IF NOT EXISTS migration_number MINVALUE 0 START WITH 0;'>/dev/null 2>&1
+printf -v actual_version "%d" `psql -qtAX -U $USER -h $HOST $NAME -c 'SELECT last_value FROM migration_number'`
+if [ $actual_version == 0 ]; then
+    psql -U $USER -h $HOST $NAME -c "SELECT nextval('migration_number');">/dev/null 2>&1
+fi
+
+
+# list sorted migration files they should have number prefix and sql extension
+list_of_migrations=`ls -1 *.sql | sort -u`
+schema_dump_file='0000_schema_dump.sql'
+
+# compare migration file number wiht migration_number sequence
+# and execute if it is less
+for migration_file in $list_of_migrations
+do
+    # extract migration number from the file prefix
+    printf -v migration_number "%d" `echo $migration_file | cut -d'_' -f 1`
+
+    # lates actual dump file has 0000 migration number, we are skipping them
+    if [ $((migration_number)) -eq 0 ] ;then continue ;fi
+
+    if [ $((migration_number)) -gt $((actual_version)) ]
+    then
+        # we run each migration in the transaction and update migration number in the database
+        migration_data="BEGIN;$(<$migration_file)\nSELECT nextval('migration_number');COMMIT;"
+        echo -e "$migration_data" | psql -v ON_ERROR_STOP=1 -U $USER -h $HOST $NAME>/dev/null 2>&1
+
+        if [ $? -gt 0 ]
+        then
+            printf "FAIL! %s\n" `echo $migration_file | cut -d'.' -f 1`
+            exit $?
+        fi
+
+        printf "DONE. %s\n" `echo $migration_file | cut -d'.' -f 1`
+
+        # after each migration we refresh schema dump file if this
+        # dump doesn't contains migration changes
+        if [[ ! -f $schema_dump_file || $schema_dump_file -ot $migration_file ]]
+        then
+            pg_dump -U $USER -h $HOST --schema-only $NAME>$schema_dump_file
+            # we append migration number sequence update query to schema dump
+            echo "SELECT setval('public.migration_number', $migration_number);">>$schema_dump_file
+        fi
+    fi
+done
