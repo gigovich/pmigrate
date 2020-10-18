@@ -22,7 +22,7 @@ schema_dump_file='0000_schema_dump.sql'
 for migration_file in $list_of_migrations
 do
     # extract migration number from the file prefix
-    printf -v migration_number "%d" `echo $migration_file | cut -d'_' -f 1`
+    printf -v migration_number "%d" `echo $migration_file | cut -d'_' -f 1 | sed 's/0*//'`
 
     # lates actual dump file has 0000 migration number, we are skipping them
     if [ $((migration_number)) -eq 0 ] ;then continue ;fi
@@ -36,6 +36,8 @@ do
         if [ $? -gt 0 ]
         then
             printf "FAIL! %s\n" `echo $migration_file | cut -d'.' -f 1`
+            # repeat failed query to show debug info
+            echo -e "$migration_data" | psql -v ON_ERROR_STOP=1 -U $USER -h $HOST $NAME
             exit $?
         fi
 
